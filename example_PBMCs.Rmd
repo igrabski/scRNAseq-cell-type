@@ -1,0 +1,141 @@
+---
+title: "Single-Cell Modeling"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+library(dplyr)
+library(Seurat)
+library(Biobase)
+library(reshape2)
+library(rjags)
+library(xbioc,lib.loc='~/R/x86_64-pc-linux-gnu-library/3.6_ubuntu/')
+library(ggpubr,lib.loc='~/R/x86_64-pc-linux-gnu-library/3.6_ubuntu/')
+library(flexmix)
+library(mixtools)
+library(gplots)
+library(hgu133plus2.db,lib.loc='~/R/x86_64-pc-linux-gnu-library/3.6_ubuntu/')
+library(scales)
+library(fitdistrplus)
+library(arrangements,lib.loc='~/R/x86_64-pc-linux-gnu-library/3.6_ubuntu/')
+library(gamlss)
+library(org.Hs.eg.db)
+library(mixtools)
+library(data.table)
+library(ensembldb)
+library(EnsDb.Hsapiens.v86,lib.loc='~/R/x86_64-pc-linux-gnu-library/3.6_ubuntu/')
+library(poilog)
+library(org.Mm.eg.db,lib.loc='~/R/x86_64-pc-linux-gnu-library/3.6_ubuntu/')
+source('cell_type_identification.R')
+```
+
+```{r,echo=FALSE,cache=TRUE,warning=FALSE,message=FALSE,cache.lazy=FALSE}
+set.seed(6619)
+
+#### Read in and prepare reference and target datasets
+
+### Preparation for symbol->ENSEMBL conversion
+Hs_symbol <- org.Hs.egSYMBOL
+mapped_Hs_genes.symbol <- mappedkeys(Hs_symbol)
+Hs_symbol.df <- as.data.frame(Hs_symbol[mapped_Hs_genes.symbol])
+Hs_ensembl <- org.Hs.egENSEMBL
+mapped_Hs_genes.ensembl <- mappedkeys(Hs_ensembl)
+Hs_ensembl.df <- as.data.frame(Hs_ensembl[mapped_Hs_genes.ensembl])
+Hs_mapping <- merge(Hs_symbol.df,Hs_ensembl.df)
+
+### PBMCs ###
+
+## CD4: https://support.10xgenomics.com/single-cell-gene-expression/datasets/1.1.0/cd4_t_helper?
+cd4_facs.data <- Read10X(data.dir = "cd4_singlecell/")
+cd4_facs.data <- as.matrix(cd4_facs.data)
+rownames(cd4_facs.data) <- Hs_mapping$ensembl_id[match(rownames(cd4_facs.data),Hs_mapping$symbol)]
+cd4_facs.data <- cd4_facs.data[!is.na(rownames(cd4_facs.data)),]
+cd4_facs.data <- na.omit(cd4_facs.data)
+cd4.test <- cd4_facs.data[,1:100] # CD4 target data [PBMCs withheld]
+cd4_facs.data <- cd4_facs.data[,101:11213] # CD4 reference data
+
+## CD8: https://support.10xgenomics.com/single-cell-gene-expression/datasets/1.1.0/cytotoxic_t
+cd8_facs.data <- Read10X(data.dir = 'filtered_matrices_cd8/hg19/')
+cd8_facs.data <- as.matrix(cd8_facs.data)
+rownames(cd8_facs.data) <- Hs_mapping$ensembl_id[match(rownames(cd8_facs.data),Hs_mapping$symbol)]
+cd8_facs.data <- cd8_facs.data[!is.na(rownames(cd8_facs.data)),]
+cd8.test <- cd8_facs.data[,1:100] # CD8 target data [PBMCs withheld]
+cd8_facs.data <- cd8_facs.data[,101:10209] # CD8 reference data
+
+## CD14: https://support.10xgenomics.com/single-cell-gene-expression/datasets/1.1.0/cd14_monocytes
+cd14_facs.data <- Read10X(data.dir = 'filtered_matrices_cd14/hg19/')
+cd14_facs.data <- as.matrix(cd14_facs.data)
+rownames(cd14_facs.data) <- Hs_mapping$ensembl_id[match(rownames(cd14_facs.data),Hs_mapping$symbol)]
+cd14_facs.data <- cd14_facs.data[!is.na(rownames(cd14_facs.data)),]
+cd14.test <- cd14_facs.data[,1:100] # CD14 target data [PBMCs withheld]
+cd14_facs.data <- cd14_facs.data[,101:2612] # CD14 reference data
+
+## NK: https://support.10xgenomics.com/single-cell-gene-expression/datasets/1.1.0/cd56_nk
+nk_facs.data <- Read10X(data.dir = 'filtered_matrices_nk/hg19/')
+nk_facs.data <- as.matrix(nk_facs.data)
+rownames(nk_facs.data) <- Hs_mapping$ensembl_id[match(rownames(nk_facs.data),Hs_mapping$symbol)]
+nk_facs.data <- nk_facs.data[!is.na(rownames(nk_facs.data)),]
+nk.test <- nk_facs.data[,1:100] # NK target data [PBMCs withheld]
+nk_facs.data <- nk_facs.data[,101:8385] # NK reference data
+
+## CD14: https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSM2773408
+cd14_d1.data <- read.csv('GSM2773408_monocytes_d1.csv')
+rownames(cd14_d1.data) <- cd14_d1.data$X
+cd14_d1.data <- cd14_d1.data[,2:dim(cd14_d1.data)[2]] # CD14 target data [PBMCs external]
+
+## CD14: https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSM2773409
+cd14_d2.data <- read.csv('GSM2773409_monocytes_d2.csv')
+rownames(cd14_d2.data) <- cd14_d2.data$X
+cd14_d2.data <- cd14_d2.data[,2:dim(cd14_d2.data)[2]] # CD14 target data [PBMCs external]
+
+## PBMCs withheld creation
+common_pbmcs_withheld <- Reduce(intersect,list(rownames(cd4.test),rownames(cd14.test),
+                                                rownames(cd8.test),rownames(nk.test)))
+pbmcs_withheld <- as.matrix(cbind(cd4.test[common_pbmcs_withheld,],cd14.test[common_pbmcs_withheld,],
+                                    cd8.test[common_pbmcs_withheld,],nk.test[common_pbmcs_withheld,]))
+pbmcs_withheld_labels <- c(rep('CD4',100),rep('CD14',100),rep('CD8',100),rep('NK',100))
+
+## PBMCs external creation
+common_pbmcs_external <- Reduce(intersect,list(rownames(cd14_d1.data),rownames(cd14_d2.data)))
+num_pbmcs_external <- min(c(dim(cd14_d1.data)[2],dim(cd14_d2.data)[2]))
+pbmcs_external <- as.matrix(cbind(cd14_d1.data[common_pbmcs_external,1:num_pbmcs_external],
+                          cd14_d2.data[common_pbmcs_external,1:num_pbmcs_external]))
+pbmcs_external_labels <- rep('CD14',num_pbmcs_external*2)
+
+```{r,echo=FALSE,cache=TRUE,warning=FALSE,message=FALSE}
+### Fit reference data
+
+cd4.fit <- fit_mix(process_singlecell(cd4_facs.data))
+cd14.fit <- fit_mix(process_singlecell(cd14_facs.data))
+cd8.fit <- fit_mix(process_singlecell(cd8_facs.data))
+nk.fit <- fit_mix(process_singlecell(nk_facs.data))
+```
+
+```{r,echo=FALSE,cache=TRUE,warning=FALSE,message=FALSE}
+### Prepare for testing
+
+cd4.df <- prep_df(process_singlecell(cd4_facs.data),cd4.fit)
+cd14.df <- prep_df(process_singlecell(cd14_facs.data),cd14.fit)
+cd8.df <- prep_df(process_singlecell(cd8_facs.data),cd8.fit)
+nk.df <- prep_df(process_singlecell(nk_facs.data),nk.fit)
+
+common <- Reduce(intersect,list(rownames(cd4.df),rownames(cd14.df),rownames(cd8.df),rownames(nk.df)))
+cd4.df <- cd4.df[common,]
+cd14.df <- cd14.df[common,]
+cd8.df <- cd8.df[common,]
+nk.df <- nk.df[common,]
+```
+
+```{r,echo=FALSE,cache=TRUE,warning=FALSE,message=FALSE}
+### Test withheld data
+
+predict_type(list(cd4.df,cd14.df,cd8.df,nk.df),pbmcs_withheld,
+      pbmcs_withheld_labels,c('CD4','CD14','CD8','NK'))
+```
+
+```{r,echo=FALSE,cache=TRUE,warning=FALSE,message=FALSE}
+### Test external data
+
+predict_type(list(cd4.df,cd14.df,cd8.df,nk.df),pbmcs_external,
+      pbmcs_external_labels,c('CD4','CD14','CD8','NK'))
+```
