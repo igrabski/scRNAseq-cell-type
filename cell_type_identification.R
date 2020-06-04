@@ -82,11 +82,16 @@ compute_prob <- function(df,target_df) {
 }
 
 ## Evaluate accuracy on target dataset
-predict_type <- function(reference_dfs,target_df,labels,types) {
+predict_type <- function(reference_dfs,target_df,labels=NULL,types) {
   num_cells <- length(labels)
   num_refs <- length(reference_dfs)
   probs <- as.data.frame(lapply(1:num_refs,function(y) compute_prob(reference_dfs[[y]],target_df)))
   chosen <- sapply(1:num_cells,function(x) types[which(probs[x,]==max(probs[x,]))])
-  print(sum(chosen==labels)/num_cells)
-  print(table(chosen,labels))
+  if (is.null(labels)) {
+    return(chosen)
+  } else {
+    print(sum(chosen==labels)/num_cells)
+    print(table(chosen,labels))
+    return(chosen)
+  }
 }
