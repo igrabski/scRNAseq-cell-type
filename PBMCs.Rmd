@@ -6,7 +6,7 @@ output: pdf_document
 ```{r,echo=TRUE,warning=FALSE,message=FALSE}
 library(org.Hs.eg.db)
 library(Seurat)
-source('cell_type_identification2.R')
+source('cell_type_identification.R')
 ```
 
 We start by reading in our training data, which is downloaded from 10X Genomics: CD4, CD8, CD14, and NK cells. For the purposes of this example, we will withhold 100 cells of each to serve as test data. After loading in the data, we convert the gene symbols to Ensembl IDs (required).
@@ -57,17 +57,10 @@ nk.test <- nk_facs.data[,1:100] # NK withheld cells
 nk_facs.data <- nk_facs.data[,101:8385] # NK training cells
 ```
 
-Next, we fit our model to these training data. This can be done in two ways. We could call the `trainReference` function individually on the vector of total gene counts for each cell-type, or we could combine the training data into a single matrix and call the `trainAllReference` function on this matrix, alongside the vector of cell-type labels. There is no real difference between the two (`trainAllReference` will simply split the matrix into the different cell-types according to your provided labels and then call `trainReference` on each one), so whichever is easiest to use will depend on whether your different cell-types are already in separate matrices, like here, or not. We show both ways:
+Next, we fit our model to these training data. We combine the training data into a single matrix and call the `trainAllReference` function on this matrix, alongside a vector of cell-type labels.
 
 ```{r,echo=TRUE,warning=FALSE,message=FALSE}
-## Manually train each cell-type individually
-cd4.d <- trainReference(rowSums(cd4_facs.data))
-cd8.d <- trainReference(rowSums(cd8_facs.data))
-cd14.d <- trainReference(rowSums(cd14_facs.data))
-nk.d <- trainReference(rowSums(nk_facs.data))
-pbmcs.d <- list(CD4=cd4.d,CD14=cd14.d,CD8=cd8.d,NK=nk.d)
-
-## Or input a single matrix with a vector of labels 
+## Input a single matrix with a vector of labels 
 common_pbmcs_genes <- Reduce(intersect,list(rownames(cd4_facs.data),rownames(cd14_facs.data),
                                                 rownames(cd8_facs.data),rownames(nk_facs.data)))
 pbmcs_reference <- as.matrix(cbind(cd4_facs.data[common_pbmcs_genes,],
@@ -79,21 +72,19 @@ pbmcs_reference_labels <- c(rep('CD4',dim(cd4_facs.data)[2]),rep('CD14',dim(cd14
 pbmcs.d <- trainAllReference(pbmcs_reference,pbmcs_reference_labels)
 ```
 
-The list `pbmcs.d` contains one table for each inputted cell-type, which indicates each gene's empirical rate, probability of belonging to the off-low latent state, and probability of belonging to the off-high latent state. If we wanted to summarize these more succinctly, we could sum the two probabilities to result in an overall probability of that gene being off in a given cell-type. This could then be used beyond the cell-type annotation context to study gene expression within a single cell-type, to compare genes across cell-types, and to identify markers. 
+The list `pbmcs.d` contains one table for each inputted cell-type, which indicates each gene's empirical rate, probability of belonging to the off-low latent state, and probability of belonging to the off-high latent state. This is used as input into the `classifyTarget` function. However, if our goal is to summarize each cell-type more succinctly via its barcode, we could pass this list into the `getBarcode` function, which will present the probability that each gene is on in each cell-type. This could then be used beyond the cell-type annotation context to study gene expression within a single cell-type, to compare genes across cell-types, and to identify markers. 
 
-As an example, we show below how we can identify genes with a low probability of being off in CD4 cells, but a high probability of being off in the others (i.e. potential markers for this cell-type):
+As an example, we show below how we can find the barcodes for each cell-type, then identify genes with a high probability of being on in CD4 cells, but a low probability of being on in the others (i.e. potential markers for this cell-type):
 
 ```{r,echo=TRUE,warning=FALSE,message=FALSE}
-## Compute overall probability of being off
-prob.off <- sapply(pbmcs.d,function(x) x[,2]+x[,3])
-colnames(prob.off) <- names(pbmcs.d)
-rownames(prob.off) <- rownames(pbmcs.d[[1]])
+## Obtain barcodes
+barcodes <- getBarcode(pbmcs.d)
 
 ## Identify genes unlikely to be off in CD4, but likely to be off in the others
-head(prob.off[which(prob.off[,1]<0.1&prob.off[,2]>0.75&prob.off[,3]>0.75&prob.off[,4]>0.75),])
+head(barcodes[which(barcodes[,'CD4']>0.9&barcodes[,'CD14']<0.25&barcodes[,'CD8']<0.25&barcodes[,'NK']<0.25),])
 ```
 
-Finally, we can use the original object `pbmcs.d` to annotate our withheld test cells, which should be placed in a single matrix (required):
+Finally, we can use the original object `pbmcs.d` to annotate our withheld test cells, which should be placed in a single matrix. We can specify `return.probs=T` if we want a matrix of probabilistic assignments rather than just a vector of highest-probability cell-type labels. We show both below:
 
 ```{r,echo=TRUE,warning=FALSE,message=FALSE}
 ## Put withheld test cells in one matrix
@@ -104,4 +95,9 @@ true_labels <- c(rep('CD4',100),rep('CD14',100),rep('CD8',100),rep('NK',100))
 ## Annotate!
 annotation <- classifyTarget(pbmcs_withheld,pbmcs.d)
 table(annotation,true_labels)
+
+## Return probabilistic assignments instead
+probabilistic_annotation <- classifyTarget(pbmcs_withheld,pbmcs.d,return.probs=T)
+head(probabilistic_annotation)
 ```
+
