@@ -7,13 +7,14 @@ Single-cell RNA-sequencing cell-type identification that leverages reference dat
 To learn a barcode representation for cell-types in reference data, given an annotated dataset in numeric, genes by cells format:
 
 ```
-barcodes <- trainAllReference(ref,labels)
+fit <- trainAllReference(ref,labels)
+barcodes <- getBarcode(fit)
 ```
 
-To identify unknown cells in a numeric, genes by cells format from a set of possible reference cell-types for which the barcodes have already been learned:
+To identify unknown cells in a numeric, genes by cells format from a set of possible reference cell-types:
 
 ```
-target_labels <- classifyTarget(target,barcodes)
+target_labels <- classifyTarget(target,fit)
 ```
 
 For more details and example usage, see our Rmarkdown file.
