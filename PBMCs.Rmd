@@ -30,7 +30,7 @@ rownames(cd4_facs.data) <- Hs_mapping$ensembl_id[match(rownames(cd4_facs.data),H
 cd4_facs.data <- cd4_facs.data[!is.na(rownames(cd4_facs.data)),]
 cd4_facs.data <- na.omit(cd4_facs.data)
 cd4.test <- cd4_facs.data[,1:100] # CD4 withheld cells
-cd4_facs.data <- cd4_facs.data[,101:11213] # CD4 training cells
+cd4_facs.data <- cd4_facs.data[,101:1101] # CD4 training cells
 
 ## CD8: https://support.10xgenomics.com/single-cell-gene-expression/datasets/1.1.0/cytotoxic_t
 cd8_facs.data <- Read10X(data.dir = '../filtered_matrices_cd8/hg19/')
@@ -38,7 +38,7 @@ cd8_facs.data <- as.matrix(cd8_facs.data)
 rownames(cd8_facs.data) <- Hs_mapping$ensembl_id[match(rownames(cd8_facs.data),Hs_mapping$symbol)]
 cd8_facs.data <- cd8_facs.data[!is.na(rownames(cd8_facs.data)),]
 cd8.test <- cd8_facs.data[,1:100] # CD8 withheld cells
-cd8_facs.data <- cd8_facs.data[,101:10209] # CD8 training cells
+cd8_facs.data <- cd8_facs.data[,101:1101] # CD8 training cells
 
 ## CD14: https://support.10xgenomics.com/single-cell-gene-expression/datasets/1.1.0/cd14_monocytes
 cd14_facs.data <- Read10X(data.dir = '../filtered_matrices_cd14/hg19/')
@@ -46,7 +46,7 @@ cd14_facs.data <- as.matrix(cd14_facs.data)
 rownames(cd14_facs.data) <- Hs_mapping$ensembl_id[match(rownames(cd14_facs.data),Hs_mapping$symbol)]
 cd14_facs.data <- cd14_facs.data[!is.na(rownames(cd14_facs.data)),]
 cd14.test <- cd14_facs.data[,1:100] # CD14 withheld cells
-cd14_facs.data <- cd14_facs.data[,101:2612] # CD14 training cells
+cd14_facs.data <- cd14_facs.data[,101:1101] # CD14 training cells
 
 ## NK: https://support.10xgenomics.com/single-cell-gene-expression/datasets/1.1.0/cd56_nk
 nk_facs.data <- Read10X(data.dir = '../filtered_matrices_nk/hg19/')
@@ -54,7 +54,7 @@ nk_facs.data <- as.matrix(nk_facs.data)
 rownames(nk_facs.data) <- Hs_mapping$ensembl_id[match(rownames(nk_facs.data),Hs_mapping$symbol)]
 nk_facs.data <- nk_facs.data[!is.na(rownames(nk_facs.data)),]
 nk.test <- nk_facs.data[,1:100] # NK withheld cells
-nk_facs.data <- nk_facs.data[,101:8385] # NK training cells
+nk_facs.data <- nk_facs.data[,101:1101] # NK training cells
 ```
 
 Next, we fit our model to these training data. We combine the training data into a single matrix and call the `trainAllReference` function on this matrix, alongside a vector of cell-type labels.
