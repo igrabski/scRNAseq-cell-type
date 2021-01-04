@@ -8,17 +8,23 @@ Our code requires the ```sads``` package, version ```0.4.2```. We tested our cod
 
 # Usage
 
-To learn a barcode representation for cell-types in reference data, given an annotated dataset in numeric, genes by cells format with genes represented by Ensembl IDs:
+To learn a barcode representation for cell-types in reference data, given a numeric matrix ```ref``` in genes by cells format with Ensembl IDs as rownames, and a vector of cell-type annotations ```labels```:
 
 ```
 fit <- trainAllReference(ref,labels)
 barcodes <- getBarcode(fit)
 ```
 
-To identify unknown cells in a numeric, genes by cells format from a set of possible reference cell-types with genes represented by Ensembl IDs:
+To identify unknown cells in a numeric matrix ```target``` in genes by cells format with Ensembl IDs as rownames, from a set of possible reference cell-types:
 
 ```
 target_labels <- classifyTarget(target,fit)
+```
+
+To obtain probabilistic classifications for unknown cells:
+
+```
+target_probs <- classifyTarget(target,fit,return.probs=T)
 ```
 
 We currently support human, UMI count data. 
