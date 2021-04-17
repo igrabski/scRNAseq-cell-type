@@ -48,7 +48,8 @@ trainAllReference <- function(data,labels,pi.all=pi.all.g,mu=mu.g,a=a.all.g,sigm
 
 # Get barcode (probability each gene is on) from trained reference
 getBarcode <- function(d.list) {
-  barcode <- sapply(d.list,function(x) rowMax(cbind(0,1-(x[,2]+x[,3]))))
+  barcode <- sapply(d.list,function(x) 1-x[,2]-x[,3])
+  barcode[barcode<0] <- 0
   colnames(barcode) <- names(d.list)
   rownames(barcode) <- rownames(d.list[[1]])
   return(barcode)
