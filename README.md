@@ -4,7 +4,7 @@ Single-cell RNA-sequencing cell-type identification that leverages reference dat
 
 # System Requirements and Installation
 
-Our code requires the ```sads``` package, version ```0.4.2```. We tested our code in ```R``` version ```3.6.2``` and ```4.0.0```. We are currently working on a package. In the meantime, our code can be used by downloading the files ```cell_type_identification3_clean.R``` and ```params_EM_81020.rda``` from this repository into the same directory, and calling ```source('cell_type_identification3_clean.R')```. This should only take a few seconds. 
+Our code requires the packages ```sads```, ```BiocParallel```, and ```snipEM```. We tested our code in ```R``` version ```3.6.2``` and ```4.0.0```. We are currently working on a package. In the meantime, our code can be used by downloading the files ```cell_type_identification3_clean.R``` and ```params_EM_81020.rda``` from this repository into the same directory, and calling ```source('cell_type_identification3_clean.R')```. This should only take a few seconds. 
 
 # Usage
 
