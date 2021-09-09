@@ -110,7 +110,7 @@ classifyTarget <- function(target,d.list,other=FALSE,pi.all=pi.all.g,mu=mu.g,a=a
 
   if (return.probs) {
     colnames(probs) <- names(d.list2)
-    probs <- exp(probs-rowMax(probs))
+    probs <- exp(probs-sapply(1:nrow(probs),function(x) max(probs[x,])))
     return(sweep(probs,1,rowSums(probs),'/'))
   }
   
