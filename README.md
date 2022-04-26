@@ -51,4 +51,4 @@ The Rmarkdown file ```PBMCs.Rmd``` provides links to example data from 10X Genom
 
 # Data
 
-Data used for benchmarking can be found (here)[https://figshare.com/projects/Curated_10X_Data/137892].
+Data used for benchmarking can be found [here](https://figshare.com/projects/Curated_10X_Data/137892).
