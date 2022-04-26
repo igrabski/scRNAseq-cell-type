@@ -1,0 +1,580 @@
+---
+title: "Benchmark All Methods"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+library(plyr)
+library(dplyr)
+library(Seurat)
+library(Biobase)
+library(reshape2)
+library(CHETAH)
+library(data.table)
+library(SingleCellExperiment)
+library(scmap)
+library(scater)
+library(igraph)
+library(xgboost)
+library(scran)
+library(org.Hs.eg.db)
+library(garnett)
+library(tensorflow)
+library(cellassign)
+library(SingleR)
+library(reticulate)
+library(singleCellNet)
+source('cell_type_identification4_clean.R')
+```
+
+```{r,echo=FALSE,cache=FALSE,warning=FALSE,message=FALSE,cache.lazy=FALSE}
+set.seed(6619)
+
+# Load in datasets
+
+# PBMCs
+load('../Curated10XData/10x_pbmcs_reference_sce.rda')
+load('../Curated10XData/10x_pbmcs_withheld_sce.rda')
+load('../Curated10XData/goudot_cd14_sce.rda')
+
+# Colon
+load('../Curated10XData/colon_reference_sce.rda')
+load('../Curated10XData/colon_withheld_sce.rda')
+load('../Curated10XData/smillie_colon_sce.rda')
+
+# Brain
+load('../Curated10XData/brain_reference_sce.rda')
+load('../Curated10XData/brain_withheld_sce.rda')
+load('../Curated10XData/hasselmann_microglia_sce.rda')
+
+# Lung
+load('../Curated10XData/lung_reference_sce.rda')
+load('../Curated10XData/lung_withheld_sce.rda')
+load('../Curated10XData/lungmap_lung_sce.rda')
+```
+
+# Barcode
+
+```{r,echo=FALSE,cache=FALSE,warning=FALSE,message=FALSE}
+test_barcode <- function(training,testing) {
+  training.d <- trainAllReference(counts(training),training$label)
+  output <- classifyTarget(counts(testing),training.d,other=T)
+  
+  print(table(output,testing$label))
+  print(sum(output!='other')/length(output))
+  print(sum(output[output!='other']==testing$label[output!='other'])/length(output[output!='other']))
+}
+
+test_barcode(pbmcs_reference_sce,pbmcs_withheld_sce)
+test_barcode(pbmcs_reference_sce,goudot_cd14_sce)
+test_barcode(colon_reference_sce,colon_withheld_sce)
+test_barcode(colon_reference_sce,smillie_colon_sce)
+test_barcode(brain_reference_sce,brain_withheld_sce)
+test_barcode(brain_reference_sce,hasselmann_microglia_sce)
+test_barcode(lung_reference_sce,lung_withheld_sce)
+test_barcode(lung_reference_sce,lungmap_lung_sce)
+```
+
+# CHETAH
+
+```{r,echo=FALSE,cache=FALSE,warning=FALSE,message=FALSE,eval=TRUE}
+Hs_symbol <- org.Hs.egSYMBOL
+mapped_Hs_genes.symbol <- mappedkeys(Hs_symbol)
+Hs_symbol.df <- as.data.frame(Hs_symbol[mapped_Hs_genes.symbol])
+Hs_ensembl <- org.Hs.egENSEMBL
+mapped_Hs_genes.ensembl <- mappedkeys(Hs_ensembl)
+Hs_ensembl.df <- as.data.frame(Hs_ensembl[mapped_Hs_genes.ensembl])
+Hs_mapping <- merge(Hs_symbol.df,Hs_ensembl.df)
+
+ribo <- read.table("../ribosomal.txt", header = FALSE, sep = '\t')
+ribo$V1 <- Hs_mapping$ensembl_id[match(ribo$V1,Hs_mapping$symbol)]
+
+# Adapted from CHETAH vignette
+test_chetah <- function(training,testing) {
+  colnames(colData(training)) <- c('celltypes')
+  cell_selection <- unlist(lapply(unique(training$celltypes), function(type) {
+    type_cells <- which(training$celltypes == type)
+    if (length(type_cells) > 200) {
+        type_cells[sample(length(type_cells), 200)]
+    } else type_cells
+  }))
+  training <- training[,cell_selection]
+  assay(training, "counts") <- apply(assay(training, "counts"), 2, 
+                                       function(column) log2((column/sum(column) * 100000) + 1))
+  training <- training[!rownames(training) %in% ribo[,1], ]
+  
+  predict <- CHETAHclassifier(input=testing,ref_cells=training)
+  
+  print(table(predict$celltype_CHETAH,testing$label))
+  print(sum(predict$celltype_CHETAH%in%unique(training$celltypes))/length(predict$celltype_CHETAH))
+  print(sum(predict$celltype_CHETAH[predict$celltype_CHETAH%in%unique(training$celltypes)]==
+              testing$label[predict$celltype_CHETAH%in%unique(training$celltypes)])/
+          length(predict$celltype_CHETAH[predict$celltype_CHETAH%in%unique(training$celltypes)]))
+}
+
+test_chetah(pbmcs_reference_sce,pbmcs_withheld_sce)
+test_chetah(pbmcs_reference_sce,goudot_cd14_sce)
+test_chetah(colon_reference_sce,colon_withheld_sce)
+test_chetah(colon_reference_sce,smillie_colon_sce)
+test_chetah(brain_reference_sce,brain_withheld_sce)
+test_chetah(brain_reference_sce,hasselmann_microglia_sce)
+test_chetah(lung_reference_sce,lung_withheld_sce)
+test_chetah(lung_reference_sce,lungmap_lung_sce)
+```
+
+# scmap
+
+```{r,echo=FALSE,warning=FALSE,message=FALSE,eval=TRUE}
+# Adapted from scmap vignette
+test_scmap <- function(training,testing) {
+  training.c <- counts(training)
+  training.c <- apply(training.c, 2, function (column) column*1000000/sum(column))
+  training <- SingleCellExperiment(assays = list(normcounts = as.matrix(training.c)),
+                                          colData = DataFrame(cell_type1 = training$label))
+  logcounts(training) <- log2(normcounts(training)+1)
+  rowData(training)$feature_symbol <- rownames(training)
+  training <- training[!duplicated(rownames(training)),]
+  training <- selectFeatures(training)
+  training <- indexCluster(training)
+  training <- indexCell(training)
+  
+  testing.c <- counts(testing)
+  testing.c <- apply(testing.c, 2, function (column) column*1000000/sum(column))
+  testing <- SingleCellExperiment(assays = list(normcounts = as.matrix(testing.c)),
+                                  colData = DataFrame(label = testing$label))
+  logcounts(testing) <- log2(normcounts(testing)+1)
+  rowData(testing)$feature_symbol <- rownames(testing)
+  testing <- testing[!duplicated(rownames(testing)),]
+  
+  testing.cell <- scmapCell(testing,list(yan=metadata(training)$scmap_cell_index))
+  predict <- scmapCell2Cluster(testing.cell,list(as.character(colData(training)$cell_type1)))
+  
+  print(table(predict$scmap_cluster_labs,testing$label))
+  print(sum(predict$scmap_cluster_labs%in%unique(training$cell_type1))/length(predict$scmap_cluster_labs))
+  print(sum(predict$scmap_cluster_labs[predict$scmap_cluster_labs%in%unique(training$cell_type1)]==
+              testing$label[predict$scmap_cluster_labs%in%unique(training$cell_type1)])/
+          length(predict$scmap_cluster_labs[predict$scmap_cluster_labs%in%unique(training$cell_type1)]))
+}
+
+test_scmap(pbmcs_reference_sce,pbmcs_withheld_sce)
+test_scmap(pbmcs_reference_sce,goudot_cd14_sce)
+test_scmap(colon_reference_sce,colon_withheld_sce)
+test_scmap(colon_reference_sce,smillie_colon_sce)
+test_scmap(brain_reference_sce,brain_withheld_sce)
+test_scmap(brain_reference_sce,hasselmann_microglia_sce)
+test_scmap(lung_reference_sce,lung_withheld_sce)
+test_scmap(lung_reference_sce,lungmap_lung_sce)
+```
+
+# CaSTLe
+
+```{r,echo=FALSE,warning=FALSE,message=FALSE,eval=TRUE}
+# From CaSTLe
+classify_castle <- function(source, target) {
+  BREAKS=c(-1, 0, 1, 6, Inf)
+  nFeatures = 100
+    
+  # 1. Load datasets in scater format: loaded files expected to contain "Large SingleCellExperiment" object
+  ds1 = t(exprs(source)) 
+  ds2 = t(exprs(target)) 
+  colnames(ds1) = elementMetadata(source)$feature_symbol
+  colnames(ds2) = elementMetadata(target)$feature_symbol
+  sourceCellTypes = as.factor(colData(source)$celltypes)
+
+  # 2. Unify sets, excluding low expressed genes
+  source_n_cells_counts = apply(exprs(source), 1, function(x) { sum(x > 0) } )
+  target_n_cells_counts = apply(exprs(target), 1, function(x) { sum(x > 0) } )
+  common_genes = intersect( colnames(ds1)[source_n_cells_counts>10], 
+                            colnames(ds2)[target_n_cells_counts>10]
+  )
+  remove(source_n_cells_counts, target_n_cells_counts)
+  ds1 = ds1[, colnames(ds1) %in% common_genes]
+  ds2 = ds2[, colnames(ds2) %in% common_genes]
+  ds = rbind(ds1[,common_genes], ds2[,common_genes])
+  isSource = c(rep(TRUE,nrow(ds1)), rep(FALSE,nrow(ds2)))
+  remove(ds1, ds2)
+  
+  # 3. Highest mean in both source and target
+  topFeaturesAvg = colnames(ds)[order(apply(ds, 2, mean), decreasing = T)]
+  
+  # for each cell - what is the most probable classification?
+  L = length(levels(sourceCellTypes))
+  targetClassification = as.data.frame(matrix(rep(0,L*sum(!isSource)), nrow=L), row.names = levels(sourceCellTypes))
+  
+  
+  # iterate over all source cell types
+  for (cellType in levels(sourceCellTypes)) {
+    
+    inSourceCellType = as.factor(ifelse(sourceCellTypes == cellType, cellType, paste0("NOT",cellType)))
+    
+    # 4. Highest mutual information in source
+    topFeaturesMi = names(sort(apply(ds[isSource,],2,function(x) { compare(cut(x,breaks=BREAKS),inSourceCellType,method = "nmi") }), decreasing = T))
+    
+    # 5. Top n genes that appear in both mi and avg
+    selectedFeatures = union(head(topFeaturesAvg, nFeatures) , head(topFeaturesMi, nFeatures) )
+    
+    # 6. remove correlated features
+    tmp = cor(ds[,selectedFeatures], method = "pearson")
+    tmp[!lower.tri(tmp)] = 0
+    selectedFeatures = selectedFeatures[apply(tmp,2,function(x) any(x < 0.9))]
+    remove(tmp)
+    
+    # 7,8. Convert data from continous to binned dummy vars
+    # break datasets to bins
+    dsBins = apply(ds[, selectedFeatures], 2, cut, breaks= BREAKS)
+    # use only bins with more than one value
+    nUniq = apply(dsBins, 2, function(x) { length(unique(x)) })
+    # convert to dummy vars
+    ds0 = model.matrix(~ . , as.data.frame(dsBins[,nUniq>1]))
+    remove(dsBins, nUniq)
+  
+    cat(paste0("<h2>Classifier for ",cellType,"</h2>"))
+    
+    inTypeSource = sourceCellTypes == cellType
+    # 9. Classify
+    xg=xgboost(data=ds0[isSource,] , 
+               label=inTypeSource,
+               objective="binary:logistic", 
+               eta=0.7 , nthread=1, nround=20, verbose=0,
+               gamma=0.001, max_depth=5, min_child_weight=10)
+  
+    # 10. Predict
+    inTypeProb = predict(xg, ds0[!isSource, ])
+    
+    targetClassification[cellType,] = inTypeProb
+  }
+  return(targetClassification)
+}
+
+test_castle <- function(training,testing) {
+  logcounts(training) <- log2(counts(training)+1)
+  rowData(training)$feature_symbol <- rownames(training)
+  colnames(colData(training)) <- c('celltypes')
+  
+  logcounts(testing) <- log2(counts(testing)+1)
+  rowData(testing)$feature_symbol <- rownames(testing)
+  
+  predict <- classify_castle(training,testing)
+  predict <- t(as.matrix(predict))
+  predict <- sapply(1:ncol(testing),
+                    function(x) which(predict[x,]==max(predict[x,])))
+  
+  print(table(names(predict),testing$label))
+  print(sum(names(predict)==testing$label)/length(names(predict)))
+}
+
+test_castle(pbmcs_reference_sce,pbmcs_withheld_sce)
+test_castle(pbmcs_reference_sce,goudot_cd14_sce)
+test_castle(colon_reference_sce,colon_withheld_sce)
+test_castle(colon_reference_sce,smillie_colon_sce)
+test_castle(brain_reference_sce,brain_withheld_sce)
+test_castle(brain_reference_sce,hasselmann_microglia_sce)
+test_castle(lung_reference_sce,lung_withheld_sce)
+test_castle(lung_reference_sce,lungmap_lung_sce)
+```
+
+# Garnett
+
+```{r,echo=FALSE,warning=FALSE,message=FALSE}
+# Adapted from tutorial
+test_garnett <- function(training,testing,markerfile) {
+  training <- training[!duplicated(rownames(training)),]
+  testing <- testing[!duplicated(rownames(testing)),]
+  training.c <- counts(training)
+  pdata <- as.data.frame(cbind(colnames(training.c),training$label))
+  colnames(training.c) <- 1:ncol(training.c)
+  rownames(pdata) <- colnames(training.c)
+  training <- newCellDataSet(training.c,phenoData=new("AnnotatedDataFrame",data=pdata))
+  training <- estimateSizeFactors(training)
+       
+  testing.c <- counts(testing)
+  colnames(testing.c) <- 1:ncol(testing.c)
+  testing.g <- newCellDataSet(testing.c)
+  testing.g <- estimateSizeFactors(testing.g)
+  classifier <- train_cell_classifier(cds=training,marker_file=markerfile,db=org.Hs.eg.db,
+                  cds_gene_id_type = 'ENSEMBL',marker_file_gene_id_type='ENSEMBL')
+  predict <- classify_cells(testing.g,classifier,cluster_extend=T,
+                             db=org.Hs.eg.db,cds_gene_id_type='ENSEMBL')
+  
+  print(table(phenoData(predict)$cluster_ext_type,testing$label))
+  print(sum(phenoData(predict)$cluster_ext_type!='Unknown')/ncol(testing))
+  print(sum(phenoData(predict)$cluster_ext_type[phenoData(predict)$cluster_ext_type!='Unknown']==
+              testing$label[phenoData(predict)$cluster_ext_type!='Unknown'])/
+          sum(phenoData(predict)$cluster_ext_type!='Unknown'))
+}
+
+test_garnett(pbmcs_reference_sce,pbmcs_withheld_sce,'Garnett_Markers/pbmcs_reference_markers.txt')
+test_garnett(pbmcs_reference_sce,goudot_cd14_sce,'Garnett_Markers/pbmcs_reference_markers.txt')
+test_garnett(colon_reference_sce,colon_withheld_sce,'Garnett_Markers/colon_reference_markers.txt')
+test_garnett(colon_reference_sce,smillie_colon_sce,'Garnett_Markers/colon_reference_markers.txt')
+test_garnett(brain_reference_sce,brain_withheld_sce,
+             'Garnett_Markers/brain_reference_markers.txt')
+test_garnett(brain_reference_sce,
+             hasselmann_microglia_sce,
+             'Garnett_Markers/brain_reference_markers.txt')
+test_garnett(lung_reference_sce,lung_withheld_sce,'Garnett_Markers/lung_reference_markers.txt')
+test_garnett(lung_reference_sce,lungmap_lung_sce,
+             'Garnett_Markers/lung_reference_markers.txt')
+```
+
+# Cell Assign
+
+```{r,echo=FALSE,warning=FALSE,message=FALSE}
+test_cellassign <- function(testing,gene_list) {
+  testing <- computeSumFactors(testing)
+  gene_list <- marker_list_to_mat(gene_list)
+  testing <- testing[intersect(rownames(testing),rownames(gene_list)),]
+  gene_list <- gene_list[rownames(testing),]
+  
+  fit <- cellassign(exprs_obj=testing,marker_gene_info=gene_list,
+                    s=sizeFactors(testing),shrinkage=T)
+  print(table(celltypes(fit),testing$label))
+  print(sum(!celltypes(fit)%in%c('unassigned','other'))/length(celltypes(fit)))
+  print(sum(celltypes(fit)[!celltypes(fit)%in%c('unassigned','other')]==
+              testing$label[!celltypes(fit)%in%c('unassigned','other')])/
+          sum(!celltypes(fit)%in%c('unassigned','other')))
+}
+
+test_cellassign(pbmcs_withheld_sce,
+                list(
+    CD14=c("ENSG00000087086", "ENSG00000167996", "ENSG00000163220", "ENSG00000101439", 
+  "ENSG00000196126", "ENSG00000143546"),
+    CD8=c("ENSG00000172116", "ENSG00000118181", "ENSG00000144713", "ENSG00000153563", 
+  "ENSG00000198242", "ENSG00000112306"),
+    CD4=c("ENSG00000227507", "ENSG00000100316", "ENSG00000147403", "ENSG00000111716", 
+  "ENSG00000156508", "ENSG00000167658"),
+    NK=c("ENSG00000115523", "ENSG00000105374", "ENSG00000100453", "ENSG00000145649", 
+  "ENSG00000111796", "ENSG00000077984")
+  ))
+test_cellassign(goudot_cd14_sce,
+                list(
+    CD14=c("ENSG00000087086", "ENSG00000167996", "ENSG00000163220", "ENSG00000101439", 
+  "ENSG00000196126", "ENSG00000143546"),
+    CD8=c("ENSG00000172116", "ENSG00000118181", "ENSG00000144713", "ENSG00000153563", 
+  "ENSG00000198242", "ENSG00000112306"),
+    CD4=c("ENSG00000227507", "ENSG00000100316", "ENSG00000147403", "ENSG00000111716", 
+  "ENSG00000156508", "ENSG00000167658"),
+    NK=c("ENSG00000115523", "ENSG00000105374", "ENSG00000100453", "ENSG00000145649", 
+  "ENSG00000111796", "ENSG00000077984")
+  ))
+test_cellassign(colon_withheld_sce,
+                list(
+    Epithelial=c('ENSG00000171747','ENSG00000111057','ENSG00000166920',
+                 'ENSG00000119888','ENSG00000127324','ENSG00000162896'),
+    B=c("ENSG00000019582", "ENSG00000254772", "ENSG00000105369", "ENSG00000128340", 
+  "ENSG00000243678", "ENSG00000111348"),
+    Stromal=c('ENSG00000163453','ENSG00000171223','ENSG00000122786',
+              'ENSG00000184557','ENSG00000168542','ENSG00000108821')
+  ))
+test_cellassign(smillie_colon_sce,
+                list(
+    Epithelial=c('ENSG00000171747','ENSG00000111057','ENSG00000166920',
+                 'ENSG00000119888','ENSG00000127324','ENSG00000162896'),
+    B=c("ENSG00000019582", "ENSG00000254772", "ENSG00000105369", "ENSG00000128340", 
+  "ENSG00000243678", "ENSG00000111348"),
+    Stromal=c('ENSG00000163453','ENSG00000171223','ENSG00000122786',
+              'ENSG00000184557','ENSG00000168542','ENSG00000108821')
+  ))
+test_cellassign(brain_withheld_sce,
+                list(
+    Astro=c('ENSG00000185942','ENSG00000046889','ENSG00000125462',
+            'ENSG00000163288','ENSG00000185532','ENSG00000111783'),
+    Oligo=c('ENSG00000168314','ENSG00000213186','ENSG00000078269',
+            'ENSG00000259070','ENSG00000204655','ENSG00000172508'),
+    Micro=c('ENSG00000151474','ENSG00000120594','ENSG00000068305',
+            'ENSG00000081189','ENSG00000107099','ENSG00000182601')
+  ))
+test_cellassign(hasselmann_microglia_sce,
+                list(
+    Astro=c('ENSG00000185942','ENSG00000046889','ENSG00000125462',
+            'ENSG00000163288','ENSG00000185532','ENSG00000111783'),
+    Oligo=c('ENSG00000168314','ENSG00000213186','ENSG00000078269',
+            'ENSG00000259070','ENSG00000204655','ENSG00000172508'),
+    Micro=c('ENSG00000151474','ENSG00000120594','ENSG00000068305',
+            'ENSG00000081189','ENSG00000107099','ENSG00000182601')
+  ))
+test_cellassign(lung_withheld_sce,
+                list(
+  `Alveolar Epithelial Type 2`=c('ENSG00000133661','ENSG00000131400','ENSG00000096088',
+                                 'ENSG00000122852','ENSG00000134020','ENSG00000185303'),
+  `Alveolar Fibroblast`=c('ENSG00000139329','ENSG00000166482','ENSG00000106538','ENSG00000077942',
+                          'ENSG00000011465','ENSG00000196616'),
+  Artery=c('ENSG00000265107','ENSG00000155011','ENSG00000101955','ENSG00000119326',
+           'ENSG00000137033','ENSG00000164736'),
+  `Basophil/Mast 1`=c('ENSG00000197253','ENSG00000172236','ENSG00000163751',
+                      'ENSG00000149534','ENSG00000163106','ENSG00000127074'),
+  Capillary=c('ENSG00000163072','ENSG00000108576','ENSG00000142748',
+              'ENSG00000131016','ENSG00000139318','ENSG00000122679'),
+  `Capillary Aerocyte`=c('ENSG00000171243','ENSG00000136160',
+                         'ENSG00000188015','ENSG00000164035','ENSG00000166710','ENSG00000106025'),
+  `CD4+ Memory/Effector T`=c('ENSG00000227507','ENSG00000102245','ENSG00000233093',
+                             'ENSG00000116824','ENSG00000102007','ENSG00000104660'),
+  `CD8+ Naive T`=c('ENSG00000271503','ENSG00000153563','ENSG00000172116','ENSG00000211689',
+                   'ENSG00000089692','ENSG00000139187'),
+  Ciliated=c('ENSG00000105519','ENSG00000164972','ENSG00000124237','ENSG00000117472',
+             'ENSG00000160188','ENSG00000173947'),
+  `Classical Monocyte`=c('ENSG00000085265','ENSG00000143546','ENSG00000163220',
+                         'ENSG00000163221','ENSG00000038427','ENSG00000090382'),
+  Macrophage=c('ENSG00000122641','ENSG00000260314','ENSG00000173391','ENSG00000038945',
+               'ENSG00000095970','ENSG00000110079'),
+  `Natural Killer`=c('ENSG00000169583','ENSG00000198821','ENSG00000036448',
+                     'ENSG00000137441','ENSG00000180644','ENSG00000198574'),
+  Pericyte=c('ENSG00000131055','ENSG00000185633','ENSG00000131097',
+             'ENSG00000113721','ENSG00000105894','ENSG00000198759')
+))
+test_cellassign(lungmap_lung_sce,list(
+  `Alveolar Epithelial Type 2`=c('ENSG00000133661','ENSG00000131400','ENSG00000096088',
+                                 'ENSG00000122852','ENSG00000134020','ENSG00000185303'),
+  `Alveolar Fibroblast`=c('ENSG00000139329','ENSG00000166482','ENSG00000106538','ENSG00000077942',
+                          'ENSG00000011465','ENSG00000196616'),
+  Artery=c('ENSG00000265107','ENSG00000155011','ENSG00000101955','ENSG00000119326',
+           'ENSG00000137033','ENSG00000164736'),
+  `Basophil/Mast 1`=c('ENSG00000197253','ENSG00000172236','ENSG00000163751',
+                      'ENSG00000149534','ENSG00000163106','ENSG00000127074'),
+  Capillary=c('ENSG00000163072','ENSG00000108576','ENSG00000142748',
+              'ENSG00000131016','ENSG00000139318','ENSG00000122679'),
+  `Capillary Aerocyte`=c('ENSG00000171243','ENSG00000136160',
+                         'ENSG00000188015','ENSG00000164035','ENSG00000166710','ENSG00000106025'),
+  `CD4+ Memory/Effector T`=c('ENSG00000227507','ENSG00000102245','ENSG00000233093',
+                             'ENSG00000116824','ENSG00000102007','ENSG00000104660'),
+  `CD8+ Naive T`=c('ENSG00000271503','ENSG00000153563','ENSG00000172116','ENSG00000211689',
+                   'ENSG00000089692','ENSG00000139187'),
+  Ciliated=c('ENSG00000105519','ENSG00000164972','ENSG00000124237','ENSG00000117472',
+             'ENSG00000160188','ENSG00000173947'),
+  `Classical Monocyte`=c('ENSG00000085265','ENSG00000143546','ENSG00000163220',
+                         'ENSG00000163221','ENSG00000038427','ENSG00000090382'),
+  Macrophage=c('ENSG00000122641','ENSG00000260314','ENSG00000173391','ENSG00000038945',
+               'ENSG00000095970','ENSG00000110079'),
+  `Natural Killer`=c('ENSG00000169583','ENSG00000198821','ENSG00000036448',
+                     'ENSG00000137441','ENSG00000180644','ENSG00000198574'),
+  Pericyte=c('ENSG00000131055','ENSG00000185633','ENSG00000131097',
+             'ENSG00000113721','ENSG00000105894','ENSG00000198759')
+))
+```
+
+# SingleR
+
+```{r,echo=FALSE,warning=FALSE,message=FALSE}
+test_singler <- function(training,testing) {
+  training <- logNormCounts(training)
+  testing <- logNormCounts(testing)
+  
+  predict <- SingleR(test=testing,ref=training,labels=training$label,de.method='wilcox')
+  predict$pruned.labels[is.na(predict$pruned.labels)] <- 'other'
+  print(table(predict$pruned.labels,testing$label))
+  print(sum(predict$pruned.labels!='other')/length(predict$pruned.labels))
+  print(sum(predict$pruned.labels[predict$pruned.labels!='other']==
+              testing$label[predict$pruned.labels!='other'])/sum(predict$pruned.labels!='other'))
+}
+
+test_singler(pbmcs_reference_sce,pbmcs_withheld_sce)
+test_singler(pbmcs_reference_sce,goudot_cd14_sce)
+test_singler(colon_reference_sce,colon_withheld_sce)
+test_singler(colon_reference_sce,smillie_colon_sce)
+test_singler(brain_reference_sce,brain_withheld_sce)
+test_singler(brain_reference_sce,hasselmann_microglia_sce)
+test_singler(lung_reference_sce,lung_withheld_sce)
+test_singler(lung_reference_sce,lungmap_lung_sce)
+```
+
+# SVM
+
+```{r,echo=FALSE,warning=FALSE,message=FALSE}
+pbmcs_reference <- counts(pbmcs_reference_sce)
+pbmcs_withheld <- counts(pbmcs_withheld_sce)
+pbmcs_external <- counts(goudot_cd14_sce)
+pbmcs_reference2 <- pbmcs_reference[intersect(rownames(pbmcs_reference),rownames(pbmcs_external)),]
+pbmcs_external2 <- pbmcs_external[rownames(pbmcs_reference2),]
+pbmcs_reference_labels <- pbmcs_reference_sce$label
+pbmcs_external_labels <- goudot_cd14_sce$label
+pbmcs_withheld_labels <- pbmcs_withheld_sce$label
+
+colon_reference <- counts(colon_reference_sce)
+colon_withheld <- counts(colon_withheld_sce)
+colon_external <- counts(smillie_colon_sce)
+colon_reference2 <- colon_reference[intersect(rownames(colon_reference),rownames(colon_external)),]
+colon_external2 <- colon_external[rownames(colon_reference2),]
+colon_reference_labels <- colon_reference_sce$label
+colon_external_labels <- smillie_colon_sce$label
+colon_withheld_labels <- colon_withheld_sce$label
+
+brain_reference <- counts(brain_reference_sce)
+brain_withheld <- counts(brain_withheld_sce)
+brain_test <- counts(hasselmann_microglia_sce)
+brain_reference2 <- brain_reference[intersect(rownames(brain_reference),rownames(brain_test)),]
+brain_external2 <- brain_test[rownames(brain_reference2),]
+brain_reference_labels <- brain_reference_sce$label
+brain_withheld_labels <- brain_withheld_sce$label
+brain_external_labels <- hasselmann_microglia_sce$label
+
+lung_reference <- counts(lung_reference_sce)
+lung_withheld <- counts(lung_withheld_sce)
+lung_external <- counts(lungmap_lung_sce)
+lung_reference2 <- lung_reference[intersect(rownames(lung_reference),rownames(lung_external)),]
+lung_external2 <- lung_external[rownames(lung_reference2),]
+lung_reference_labels <- lung_reference_sce$label
+lung_withheld_labels <- lung_withheld_sce$label
+lung_external_labels <- lungmap_lung_sce$label
+```
+
+```{python,echo=FALSE,cache=FALSE,warning=FALSE,message=FALSE}
+from sklearn.svm import LinearSVC
+from sklearn.calibration import CalibratedClassifierCV
+import numpy as np
+import pandas as pd
+
+def test_svm(training,testing,training_labels,testing_labels):
+  training = np.log2(training+1)
+  testing = np.log2(testing+1)
+  
+  classifier = LinearSVC()
+  classifier = CalibratedClassifierCV(classifier)
+  classifier.fit(np.transpose(training),training_labels)
+  predict = classifier.predict(np.transpose(testing))
+  prob = np.max(classifier.predict_proba(np.transpose(testing)),axis = 1)
+  predict[np.where(prob<0.7)] = 'Unknown'
+  print(pd.crosstab(predict,np.array(testing_labels)))
+  print(sum(prob>=0.7)/len(predict))
+  print(sum(predict[np.where(prob>=0.7)]==np.array(testing_labels)[np.where(prob>=0.7)])/sum(prob>=0.7))
+  
+test_svm(r.pbmcs_reference,r.pbmcs_withheld,r.pbmcs_reference_labels,r.pbmcs_withheld_labels)
+test_svm(r.pbmcs_reference2,r.pbmcs_external2,r.pbmcs_reference_labels,r.pbmcs_external_labels)
+test_svm(r.colon_reference,r.colon_withheld,r.colon_reference_labels,r.colon_withheld_labels)
+test_svm(r.colon_reference2,r.colon_external2,r.colon_reference_labels,r.colon_external_labels)
+test_svm(r.brain_reference,r.brain_withheld,r.brain_reference_labels,r.brain_withheld_labels)
+test_svm(r.brain_reference2,r.brain_external2,r.brain_reference_labels,r.brain_external_labels)
+test_svm(r.lung_reference,r.lung_withheld,r.lung_reference_labels,r.lung_withheld_labels)
+test_svm(r.lung_reference2,r.lung_external2,r.lung_reference_labels,r.lung_external_labels)
+```
+
+# SingleCellNet
+
+```{r,echo=FALSE,warning=FALSE,message=FALSE}
+test_singlecellnet <- function(training,testing) {
+  training <- training[intersect(rownames(training),rownames(testing)),]
+  colnames(training) <- make.unique(colnames(training))
+  testing <- testing[rownames(training),]
+  colnames(testing) <- make.unique(colnames(testing))
+  
+  class <- scn_train(stTrain=data.frame(cell=colnames(training),
+                                        celltype=training$label),
+                     expTrain=counts(training),dLevel='celltype',
+                     colName_samp='cell',nTopGenes=10,nRand=70,nTrees=1000,nTopGenePairs=25)
+  predict <- scn_predict(cnProc=class[['cnProc']],expDat=counts(testing),nrand=0)
+  predict <- sapply(1:ncol(predict),function(x) rownames(predict)[which.max(predict[,x])])
+  print(table(predict,testing$label))
+  print(sum(predict!='rand')/length(predict))
+  print(sum(predict[predict!='rand']==testing$label[predict!='rand'])/sum(predict!='rand'))
+}
+
+test_singlecellnet(pbmcs_reference_sce,pbmcs_withheld_sce)
+test_singlecellnet(pbmcs_reference_sce,goudot_cd14_sce)
+test_singlecellnet(colon_reference_sce,colon_withheld_sce)
+test_singlecellnet(colon_reference_sce,smillie_colon_sce)
+test_singlecellnet(brain_reference_sce,brain_withheld_sce)
+test_singlecellnet(brain_reference_sce,hasselmann_microglia_sce)
+test_singlecellnet(lung_reference_sce,lung_withheld_sce)
+test_singlecellnet(lung_reference_sce,lungmap_lung_sce)
+```
+
+

@@ -6,7 +6,7 @@ output: pdf_document
 ```{r,echo=TRUE,warning=FALSE,message=FALSE}
 library(org.Hs.eg.db)
 library(Seurat)
-source('cell_type_identification3_clean.R')
+source('cell_type_identification4_clean.R')
 ```
 
 We start by reading in our training data, which is downloaded from 10X Genomics: CD4, CD8, CD14, and NK cells. For the purposes of this example, we will withhold 100 cells of each to serve as test data. After loading in the data, we convert the gene symbols to Ensembl IDs (required).
@@ -80,15 +80,17 @@ pbmcs.d <- trainAllReference(pbmcs_reference,pbmcs_reference_labels,discrim_only
 
 The list `pbmcs.d` contains one table for each inputted cell-type, which indicates each gene's empirical rate, probability of belonging to the off-low latent state, and probability of belonging to the off-high latent state. This is used as input into the `classifyTarget` function. However, if our goal is to examine each cell-type's barcode, we could pass this list into the `getBarcode` function, which will present the probability that each gene is on in each cell-type. This could then be used beyond the cell-type annotation context to study gene expression within a single cell-type, to compare genes across cell-types, and to identify markers. 
 
-As an example, we show below how we can find the barcodes for each cell-type, then identify genes with a high probability of being on in NK cells, but a low probability of being on in the others (i.e. potential markers for this cell-type):
+As an example, we show below how we can find the barcodes for each cell-type, then identify genes with a high probability of being on in NK cells, but a low probability of being on in the others (i.e. potential markers for this cell-type). Finally, we show how we can identify markers for NK cells compared to global patterns of gene expression, rather than the other cell-types under consideration here.
 
 ```{r,echo=TRUE,warning=FALSE,message=FALSE}
 ## Obtain barcodes
 barcodes <- getBarcode(pbmcs.d)
 
 ## Identify genes likely to be on in NK cells, but likely to be off in the others
-barcodes[which(barcodes[,'CD4']<0.05&barcodes[,'CD14']<0.05&
-                 barcodes[,'CD8']<0.05&barcodes[,'NK']>0.95),]
+findMarkers('NK',barcodes,thresh_up=0.95,thresh_below=0.05)
+
+## Identify genes likely to be on in NK cells, and not in global patterns 
+findMarkers('NK',barcodes,thresh_up=0.99,thresh_below=0.01,relative=F)
 ```
 
 Finally, we can use the original object `pbmcs.d` to annotate our withheld test cells, which should be placed in a single matrix. If we want the possibility of detecting cells that do not belong to any of the cell-types in the reference, we can set `other=T`. Further, we can specify `return.probs=T` if we want a matrix of probabilistic assignments rather than just a vector of highest-probability cell-type labels. We show both below:
